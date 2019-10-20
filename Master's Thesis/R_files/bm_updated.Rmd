@@ -1,0 +1,225 @@
+---
+title: "bonemarrow(Bharvi)"
+author: "Bharvi Dhall"
+date: "6/14/2019"
+output: html_document
+---
+
+```{r}
+
+#Bone Marrow Dataset
+library(Matrix)
+setwd("~/Data/bonemarrow/GSE120221_RAW")
+
+
+# This is just for the first gene
+
+bA <- readMM("GSM3396161_matrix_A.mtx")
+dim(bA)
+load("~/Data/bonemarrow/bonemarrowSeurat.Rdata")
+
+#25 .mtx.gz files were merged and converted to a seurat object
+
+```
+
+Catherine's Code to merge files:
+
+ibrary(Seurat)
+library(Matrix)
+#------------------------------------------------------------
+# Get all the file names
+p <- "/cbh/classes/ST606/simran/Data/bonemarrow/GSE120221_RAW"
+
+all <- list.files(pattern = "gz", path=p)
+all
+
+#------------------------------------------------------------
+# Get all the file headers
+heads <- list.files(pattern = "*.mtx.gz", path=p)
+heads <- substring(heads, 1,10)
+heads
+
+#------------------------------------------------------------
+# Get all the case labels
+allm <- list.files(pattern = "mtx.gz", path=p)
+gr <- substring(allm, 19,20)
+library(stringr)
+gr <-str_remove(gr, "[.]")
+gr[20]<- "Sk1"
+gr[22]<- "Sk2"
+gr
+
+#------------------------------------------------------------
+# Copy each trio of files into a separate folder, with the names as expected by Read10X
+tempfiles <- "/cbh/classes/ST606/simran/Data/bonemarrow/temp"
+dir.create(tempfiles)
+j <- 1
+for (i in 1:length(heads)){
+  fnew <- file.path(tempfiles, heads[i])
+  dir.create(fnew)
+  file.copy(file.path(p,all[j]), file.path(fnew,"barcodes.tsv.gz"))
+  file.copy(file.path(p,all[j+1]), file.path(fnew,"features.tsv.gz"))
+  file.copy(file.path(p,all[j+2]), file.path(fnew,"matrix.mtx.gz"))
+  j <- j+3
+}
+
+#------------------------------------------------------------
+# check dim of matrix
+mdim <- NULL
+for(i in 1:length(heads)){
+  fnew <- file.path(tempfiles, heads[i])
+  mdim <- rbind(mdim,(dim(readMM(file.path(fnew,"matrix.mtx.gz")))))
+}
+mdim
+
+#------------------------------------------------------------
+# check features (genes)
+fdim <- read.csv(file.path(file.path(tempfiles, heads[1]),"features.tsv.gz"))
+for(i in 2:length(heads)){
+  fnew <- file.path(tempfiles, heads[i])
+  fdim <- cbind(fdim, read.csv(file.path(fnew,"features.tsv.gz")))
+}
+fdim
+fdim[300:305,6:8] # all rows are the same
+
+#------------------------------------------------------------
+# make a grouping vector for the cell
+
+cellg <- rep(gr, times = mdim[,2])
+
+#------------------------------------------------------------
+# Play with first two folders of files
+
+# d1 <- Read10X(data.dir = file.path(pnew, heads[1]))
+# d1 <- CreateSeuratObject(d1)
+# d2 <- Read10X(data.dir = file.path(pnew, heads[2]))
+# d2 <- CreateSeuratObject(d2)
+# dall <- merge(d1, y = d2, add.cell.ids = gr[1:2])
+# 
+# 
+
+```{r}
+library(Seurat)
+library(dplyr)
+library(Matrix)
+
+#load seurat object
+load("/rstudio_studentfiles/Data/bonemarrow/bonemarrowSeurat.Rdata")
+
+#Files from multiple donors were merged to obtain the gene-expression matrix with row counts and the dimensions of the matrix thus obtained were 33694 X 90653
+#-------------STEP 1 files merged---------------------------------------------------------------------
+#seurat object created named dall
+
+#some information on the class
+show(dall)
+slotNames(dall)
+
+```
+
+
+```{r}
+#----------------------------STEP 2-PRE-PROCESSING WORKFLOW -------------------------------------
+#QUALITY CONTROL METRICS  AND SELECTING CELLS FOR FURTHER ANALYSIS
+
+#Low-quality / dying cells often exhibit extensive mitochondrial contamination,so we calculate mitochondrial QC metrics with the (PercentageFeatureSet function), which calculates the percentage of counts originating from a set of features
+#We use the set of all genes starting with MT- as a set of mitochondrial genes
+
+# The [[ operator can add columns to object metadata.
+dall[["percent.mt"]] <- PercentageFeatureSet(object = dall, pattern = "^MT-")
+
+# Visualize QC metrics as a violin plot
+VlnPlot(dall, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+# FeatureScatter is typically used to visualize feature-feature relationships, but can be used
+# for anything calculated by the object, i.e. columns in object metadata, PC scores etc.
+plot1 <- FeatureScatter(object = dall, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot2 <- FeatureScatter(object = dall, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+CombinePlots(plots = list(plot1, plot2))
+
+##Cells with a very small library size(<500) and a very high (>8%) mitochondrial genome transcript ratio wereremoved as High proportions are indicative of poor-quality cells ( Ilicic et al., 2016; Islam et al., 2014), possibly because of increased apoptosis and/or loss of cytoplasmic RNA from lysed cells. Genes detected (UMI count > 0) in less than three cells were removed
+bm <- subset(x = dall, subset = nFeature_RNA > 500 & percent.mt <8)
+#bm is the subset of cells with atleast 500 genes and MT ratio <8
+
+dim(dall)
+#33694 90653
+
+dim(bm)
+#33694 76645
+
+# After pre-processing and QC filtering 76645 cells remaining for final analysis. (EXACTLY LIKE PAPER)
+
+##--------------------------------STEP 3: Dimentionality reduction using UMAP,-----------------------------
+
+# Performing log-normalisation to normalize data
+bm <- NormalizeData(object = bm, normalization.method = "LogNormalize", 
+                      scale.factor = 10000)
+
+#-----------------------------STEP 4: fINDING VARIABLE GENES----------------------------------------
+## Detection of variable genes
+#Feature selection is an important step in any machine learning procedure. In the case of scRNA-seq data, the variation of a majority of genes across cells arises from statistical noise rather than biological factors. Therefore, it becomes important to identify the subset of genes whose variability in the dataset exceeds the background of statistical noise.
+#To find the genes that vary between single cells; genes that are constant among all cells have no distinguishing power.
+#FindVariableGenes() function calculates the average expression and dispersion for each gene, places these genes into bins, and then calculates a z-score for dispersion within each bin.This helps control for the relationship between variability and average expression.
+
+#Calculates highly variable genes
+bm <- FindVariableFeatures(object = bm)
+
+#For PCA we need to scale the data
+bm <- ScaleData(bm)
+
+#Performing PCA
+bm <- RunPCA(object = bm, pc.genes = bm@var.genes, do.print = TRUE)
+
+#appropriate no of PCs
+ElbowPlot(bm)
+# 15 dims appropriate
+
+#clustering
+bm <- FindNeighbors(bm, dims = 1:15)
+bm <- FindClusters(bm, resolution = 0.5)
+#Louvain algorithm.
+
+#Uniform Manifold Approximation and Projection (UMAP) is an algorithm for dimensional (non-linear dimensional reduction techniques like tSNE)
+#UMAP projection
+## UMAP takes too much time
+bm <- RunUMAP(bm, dims = 1:15)
+DimPlot(bm, reduction = "umap",label=TRUE)
+
+#TSNE
+bm<- RunTSNE(object = bm,dims= 1:15)
+
+#visualizing T-SNE
+DimPlot(object=bm, reduction = "tsne",label=TRUE,pt.size=0.5)
+
+```
+##-------------Differentially Expressed Genes (Marker Genes)--------------------------------------------------
+
+```{r}
+
+#find markers that define clusters via differential expression ( genes that are differentially expressed in distinct phenotypes) Here clusters can be considered as phenotypes
+#It also finds Positive and negative marker gene for each cluster
+#The min.pct argument requires a feature to be detected at a minimum percentage (how will this be decided?) in either of the two groups of cells, and the thresh.test argument requires a feature to be differentially expressed (on average) by some amount between the two groups(tutorial)
+
+#p-values should be interpreted cautiously, as the genes used for clustering are the same genes tested for differential expression(R documentation)
+
+#find marker genes in cluster 1
+cluster1.m <- FindMarkers(bm, ident.1 = 1, min.pct = 0.25)
+head(cluster1.m, n = 5)
+
+# find all markers distinguishing cluster 5 from clusters 0 and 3
+cluster5.m <- FindMarkers(bm, ident.1 = 5, ident.2 = c(0, 3), min.pct = 0.25)
+head(cluster5.m, n = 5)
+
+# find markers for every cluster compared to all remaining cells, report only the positive ones
+#bimod uses LRT
+
+bm.markers <- FindAllMarkers(bm, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25,test.use= "bimod" )
+res2 <- bm.markers %>% group_by(cluster) %>% top_n(n = 5, wt = avg_logFC)
+# 105 marker genes found
+
+x<-matrix(res2$gene, ncol=5, byrow=T)
+mydata2<-data.frame(cluster=0:20, genes=matrix(res2$gene, ncol=5, byrow=T))
+write.csv(mydata2,file="MyData2.csv")
+#write.csv on this dataframe. CH
+
+```
+

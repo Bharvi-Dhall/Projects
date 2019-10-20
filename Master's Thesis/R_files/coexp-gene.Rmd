@@ -1,0 +1,183 @@
+---
+title: "coexp-liver"
+author: "Bharvi Dhall"
+date: "7/17/2019"
+output: html_document
+---
+
+```{r}
+library(Seurat)
+library(dplyr)
+library(Matrix)
+setwd("~/Data/liver")
+
+load("liver.RData")
+liverM <- as.matrix(liver[,-1])
+rownames(liverM)<- as.character(liver[[1]])
+
+
+class(liverM)
+#matrix
+
+liverM[1:5,5:10]
+
+sgenes<-c("CDKN2A","CDKN1A","NFIA","EFNB3","SPATA6","GSTM4","MEIS1","PATZ1","USP6NL","ARGHP5","ASCC1","CREBBP","ZC3H4","ARID2","ICE1","PDS5B","SPIN4","TRDMT1","62CD5","STAG1","RHNO1","PCIF1","CNTLN","KCTD3","SMO","GDNF","PLK3","SLCI6A3","TSPAN13","CCND1","P4HA2","SLC10A3","ZBTB7A","SCOC","UFM1","B4GALT7","ACADVL","POFUT2","TAF13","NOL3","ADPGK","DDA1","ZNHIT1","CHMP5","TOLLIP","KLC1","TMEM87B","BCL2L2","SUSD6","DYNLT3","RAI14","GBEI","FAM214B","PDLIM4","DGKA","PLXNA3","MT-CYB")
+
+#ARGHP5,62CD5,SLCI6A3,GBEI
+
+sg<-c("CDKN2A","CDKN1A","NFIA","EFNB3","SPATA6","GSTM4","MEIS1","PATZ1","USP6NL","ASCC1","CREBBP","ZC3H4","ARID2","ICE1","PDS5B","SPIN4","TRDMT1","STAG1","RHNO1","PCIF1","CNTLN","KCTD3","SMO","GDNF","PLK3","TSPAN13","CCND1","P4HA2","SLC10A3","ZBTB7A","SCOC","UFM1","B4GALT7","ACADVL","POFUT2","TAF13","NOL3","ADPGK","DDA1","ZNHIT1","CHMP5","TOLLIP","KLC1","TMEM87B","BCL2L2","SUSD6","DYNLT3","RAI14","FAM214B","PDLIM4","DGKA","PLXNA3","MT-CYB")
+
+dim(liverM[sg,])
+#53 senecent genes
+
+smat<-liverM[sg,]
+
+write.csv(smat,file="coexpdata.csv")
+
+#correlation matrix
+#calculating all row by row correlations, transpose t()
+correlation_matrix <- cor(t(smat), method="pearson")
+correlation_matrix
+
+#threshold >0.01
+correlation_matrix[correlation_matrix<0.01]=0
+
+library(igraph)
+# Make an Igraph object from this matrix:
+network=graph_from_adjacency_matrix( correlation_matrix, weighted=T, mode="undirected", diag=F)
+
+#plot network
+
+plot(network)
+
+
+#convert to dgCMatrix
+M <- as(smat, "dgCMatrix")
+class(M)
+M[1:6, 1:6]
+
+library(corrplot)
+corrplot(correlation_matrix, method = "color", type = "upper")
+
+#clustering
+# Ward Hierarchical Clustering
+d <- dist(smat, method = "euclidean")  # distance matrix
+fit <- hclust(d, method = "ward")
+
+
+plot(fit)
+groups <- cutree(fit, k = 8)  # cut tree into 5 clusters
+# draw dendogram with red borders around the 5 clusters
+rect.hclust(fit, k = 8, border = "red")
+
+```
+new 
+new matrix has top 2000 genes and all cells
+
+
+```{r}
+library(Seurat)
+library(dplyr)
+library(Matrix)
+setwd("~/Data/liver")
+
+load("liver.RData")
+liverM <- as.matrix(liver[,-1])
+rownames(liverM)<- as.character(liver[[1]])
+
+pbmc <- CreateSeuratObject(M,project="pbmc3k", assay = "RNA",min.cells=0,min.features=0)
+
+pbmc <- FindVariableFeatures(object = pbmc, selection.method="dispersion", nfeatures=2000)
+
+#matrix
+top<-liverM[pbmc$RNA@var.features,]
+# to 2000 genes matrix
+top[1:5,1:5]
+
+class(top)
+
+write.csv(top,file="newgene.csv")
+
+
+```
+
+cemitool
+#manual module detection
+
+```{r, eval=FALSE}
+library(CEMiTool)
+
+#create dataframe
+dgene<-data.frame(top)
+
+
+cemg <- cemitool(dgene)
+
+cemg
+#3 modules detected
+
+# inspect modules
+nmodules(cemg)
+
+head(module_genes(cemg))
+#Genes that are allocated to Not.Correlated are genes that are not clustered into any module.
+
+generate_report(cemg)
+
+write_files(cemg)
+
+save_plots(cemg, "all")
+dev.off()
+
+library(GSA)
+
+# plot gene expression within each module
+cemg <- plot_profile(cemg)
+plots <- show_plot(cemg, "profile")
+plots[2]
+dev.off()
+
+```
+WGCNA
+
+#no success #donot run
+
+```{r, eval=FALSE}
+
+library(WGCNA)
+library(reshape2)
+library(ggplot2)
+library("flashClust")
+
+#Constructing a weighted gene network requires the choice of the soft thresholding power to which co-expression similarity is raised to calculate adjacency. The determineSoftPowerWGCNA function returns a set of network indices that should be inspected, for example:
+
+library(limma)
+#As read counts follow a negative binomial distribution, which has a mathematical theory less tractable than that of the normal distribution, RNAseq data was normalised with the voom methodology33 Charity W Law et al. voom: Precision weights unlock linear model analysis tools for RNA-seq read counts. In: Genome biology 15.2 (Jan. 2014), R29–R29.. The voom method estimates the mean-variance of the log-counts and generates a precision weight for each observation.
+RNAseq_voom = voom(smat)$E
+
+#transpose matrix to correlate genes in the following
+WGCNA_matrix = t(RNAseq_voom[order(apply(RNAseq_voom,1,mad), decreasing = T)])
+
+##Construction of co-expression network
+
+#The connections within a network can be fully described by its adjacency matrix aij, a N x N matrix whose component aij denotes the connection strength between node i and j. The connection strength is defined by the co-expression similarity sij. The most widely used method defines sij as the absolute value of the correlation coefficient between the profiles of node i and j:  sij=|cor(xi,xj)|
+
+s = abs(bicor(WGCNA_matrix))
+
+beta = 3
+a = s^beta
+
+gsg = goodSamplesGenes(s)
+gsg$allOK
+
+#dissimilarity measure
+w = 1-a
+
+
+#create gene tree by average linkage hierarchical clustering 
+geneTree = hclust(as.dist(w), method = 'average')
+
+
+```
+
+

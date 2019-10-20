@@ -1,0 +1,167 @@
+---
+title: "liver-pipe"
+author: "Bharvi Dhall"
+date: "6/24/2019"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+```{r}
+# liver
+setwd("~/Data/liver")
+
+load("liver.RData")
+liverM <- as.matrix(liver[,-1])
+rownames(liverM)<- as.character(liver[[1]])
+
+head(liverM)
+
+library(Seurat)
+library(dplyr)
+library(Matrix)
+
+
+#The dgCMatrix class is a class of sparse numeric matrices in the compressed, sparse, column-oriented format. In this implementation the non-zero elements in the columns are sorted into increasing row order. dgCMatrix is the “standard” class for sparse numeric matrices in the Matrix package.
+M1 <- as(liverM, "dgCMatrix")
+class(M1)
+M1[1:6, 1:6]
+
+# 20007 genes and 8444 single cells
+dim(M1)
+```
+
+
+
+
+#------------------------------STEP 1-CREATE SEURAT OBJECT----------------------------------------
+```{r}
+##The Seurat object is the center of each single cell analysis. It stores all information
+#' associated with the dataset, including data, annotations, analyes, etc
+#create a Seurat Object
+pbmc <- CreateSeuratObject(M1,project="pbmc3k", assay = "RNA",min.cells=0,min.features=0) #from paper
+
+#some information on the class
+class(pbmc)
+slotNames(pbmc)
+```
+
+#-----------------------------STEP 2: fINDING VARIABLE GENES----------------------------------------
+```{r}
+#Calculates highly variable genes
+pbmc <- FindVariableFeatures(object = pbmc, selection.method="dispersion", nfeatures=7000)
+
+# Identify the 10 most highly variable genes
+top10 <- head(x = VariableFeatures(object = pbmc), 10)
+
+# plot variable features with and without labels
+plot1 <- VariableFeaturePlot(object = pbmc)
+plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE)
+CombinePlots(plots = list(plot1, plot2))
+
+
+#-------------------------------Dimensionality Reduction (PCA) and its plots----------------------------------
+#Run PCA based on the variable genes. The pca is stored in the slot
+#For PCA we need to scale the data
+pbmc <- ScaleData(pbmc)
+
+#Performing PCA
+ 
+pbmc <- RunPCA(object = pbmc, do.print = TRUE) # CH: use this.
+# RunPCA has no argument called pc.genes, it is called features
+# you do not need to set it, as automatically the var.genes are used.
+# Neither is there  a slot pbmc@var.genes
+# see https://satijalab.org/seurat/v3.0/pbmc3k_tutorial.html
+
+dim(pbmc)
+
+#pbmc$RNA@var.features stores variable genes
+length(pbmc$RNA@var.features) # to check features
+
+
+#Visualizing PCA
+
+DimPlot(object = pbmc, dim.1 = 1, dim.2 = 2)
+PCAPlot(object = pbmc, dim.1 = 1, dim.2 = 2)
+```
+
+#view loadings of PC1 and 2
+
+```{r}
+VizDimLoadings(pbmc, dims = 1:2, reduction = "pca")
+
+#cells and features are ordered according to their PCA scores. Cells plotted are extreme cells.
+DimHeatmap(pbmc, dims = 1, cells = 500, balanced = TRUE)
+
+DimHeatmap(pbmc, dims = 1:5, cells = 1000, balanced = TRUE)
+```
+
+#-------------------------------Clustering the cells------------------------------------------------------
+```{r}
+## as per liver paper
+#Find neighbors
+pbmc<- FindNeighbors(object = pbmc, dims=1:29)
+
+#Finding clusters
+pbmc <- FindClusters(
+  object = pbmc, 
+  reduction.type = "pca", 
+  dims.use = 1:29, 
+  resolution = 0.8, 
+  print.output = 1, 
+  save.SNN = TRUE
+)
+
+## Look at cluster IDs of the first 5 cells
+head(Idents(pbmc), 5)
+                    
+#performing T-sne
+pbmc <- RunTSNE(
+  object = pbmc,
+  dims= 1:29,
+  perplexity=27
+)
+
+#visualizing T-SNE
+DimPlot(object=pbmc, reduction = "tsne",label=TRUE,pt.size=0.5)
+
+#Colouring Tsne by number of donors
+DimPlot(object=pbmc, reduction = "tsne",group.by= "orig.ident",pt.size=0.5)
+
+
+#Heat Map
+DimHeatmap(pbmc, balanced = TRUE) # CH: same as plot from line 91
+
+```
+
+# differentially expressed genes
+
+```{r}
+##-------------Differentially Expressed Genes (Marker Genes)--------------------------------------------------
+
+#find markers that define clusters via differential expression ( genes that are differentially expressed in distinct phenotypes) Here clusters can be considered as phenotypes
+#It also finds Positive and negative marker gene for each cluster
+#The min.pct argument requires a feature to be detected at a minimum percentage (how will this be decided?) in either of the two groups of cells, and the thresh.test argument requires a feature to be differentially expressed (on average) by some amount between the two groups(tutorial)
+
+#p-values should be interpreted cautiously, as the genes used for clustering are the same genes tested for differential expression(R documentation)
+
+#find marker genes in cluster 1
+cluster1.markers <- FindMarkers(pbmc, ident.1 = 1, min.pct = 0.25)
+head(cluster1.markers, n = 5)
+
+# find all markers distinguishing cluster 5 from clusters 0 and 3
+cluster5.markers <- FindMarkers(pbmc, ident.1 = 5, ident.2 = c(0, 3), min.pct = 0.25)
+head(cluster5.markers, n = 5)
+
+# find markers for every cluster compared to all remaining cells, report only the positive ones
+#bimod uses LRT
+
+pbmc.markers <- FindAllMarkers(pbmc, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25,test.use= "bimod" )
+res <- pbmc.markers %>% group_by(cluster) %>% top_n(n = 5, wt = avg_logFC)
+# 105 marker genes found
+#CH
+x<-matrix(res$gene, ncol=5, byrow=T)
+mydata<-data.frame(cluster=0:20, genes=matrix(res$gene, ncol=5, byrow=T))
+write.csv(mydata,file="MyData.csv")
+#write.csv on this dataframe. CH
+```
+

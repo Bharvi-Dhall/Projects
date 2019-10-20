@@ -1,0 +1,379 @@
+---
+title: "liver-pipe"
+author: "Bharvi Dhall"
+date: "6/24/2019"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+```{r}
+# LIVER DATA INTRODUCTION
+#Liver data consists of no of gene reads per cell from a sample.We have 5 samples in this dataset.
+#P1TLH_AAACCTGTCTAAGCCA_1-- represents a cell from sample 1
+#P1TLH_AAACCTGTCTAAGCCA_2-- represents a cell from sample 2
+#all genes are listed in rows and cells in columns
+
+#Load Libraries
+library(Seurat)
+library(dplyr)
+library(Matrix)
+
+setwd("~/Data/liver")
+
+load("liver.RData")
+liverM <- as.matrix(liver[,-1])
+rownames(liverM)<- as.character(liver[[1]])
+
+#View first 6 genes and first 3 cells 
+liverM[1:6,1:3]
+
+#The dgCMatrix class is a class of sparse numeric matrices in the compressed, sparse, column-oriented format.Sparse Matrix stores only the non-zero entries. It is computationally efficient compared to the dense matrices and makes calculations faster . dgCMatrix is the “standard” class for sparse numeric matrices in the Matrix package.
+M1 <- as(liverM, "dgCMatrix")
+class(M1)
+M1[1:6, 1:6]
+
+# 20007 genes and 8444 single cells
+dim(M1)
+```
+#--------------------SOME EXPLORATORY ANALYSIS----------------------------------------
+
+##BELOW WORK IS DONE TO EXPLORE DATA
+
+```{r}
+
+# summary of total expression per single cell
+summary(colSums(M1))
+
+# check how many genes have at least one transcript in each cell
+at_least_one <- apply(M1, 2, function(x) sum(x>0))
+hist(at_least_one, breaks = 100,
+     main = "Distribution of detected genes",
+     xlab = "Genes with at least one tag")
+length(at_least_one)
+##all the cells have atlease one gene transcript, none of them is 0
+ 
+hist(colSums(M1),
+     breaks = 100, main = "Expression sum per cell",
+     xlab = "Sum expression")
+##of all the cells nearly 4000 cells have very low gene expression.
+
+# manually check the number of genes detected in three or more cells
+# 23 genes are not detected in 3 or more cells
+tmp <- apply(M1, 1, function(x) sum(x>0))
+table(tmp>=3)
+
+#to check if we have duplicate genes (from paper)
+dup<-rownames(M1)[which(duplicated(toupper(rownames(M1))))]
+#no duplicated gene found
+```
+
+#RNA SEQUENCING WORKFLOW
+
+#------------------------------STEP 1-CREATE SEURAT OBJECT----------------------------------------
+```{r}
+##The Seurat object is the center of each single cell analysis. It stores all information
+#' associated with the dataset, including data, annotations, analyes, etc
+#create a Seurat Object
+pbmc <- CreateSeuratObject(M1,project="pbmc3k", assay = "RNA",min.cells=0,min.features=0) #from paper
+
+#some information on the class
+slotNames(pbmc)
+class(pbmc)
+```
+
+####---------------------------- -PRE-PROCESSING WORKFLOW -------------------------------------
+#this step is not implemented in our dataset as we got normalized data
+
+#QC AND SELECTING CELLS FOR FURTHER ANALYSIS
+
+#Low-quality / dying cells often exhibit extensive mitochondrial contamination,so we calculate mitochondrial QC metrics with the (PercentageFeatureSet function), which calculates the percentage of counts originating from a set of features
+#We use the set of all genes starting with MT- as a set of mitochondrial genes
+
+# The [[ operator can add columns to object metadata.
+pbmc[["percent.mt"]] <- PercentageFeatureSet(object = pbmc, pattern = "^MT-")
+
+
+#The number of unique genes and total molecules are automatically calculated during CreateSeuratObject and we can check it using its metadata.Below code displays count first five rows of meta data
+head(x = pbmc@meta.data, 5)
+
+# Visualize QC metrics using a violin plot
+VlnPlot(object = pbmc, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+# FeatureScatter is typically used to visualize feature-feature relationships, but can be used
+# for anything calculated by the object, i.e. columns in object metadata, PC scores etc.
+plot1 <- FeatureScatter(object = pbmc, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot2 <- FeatureScatter(object = pbmc, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+CombinePlots(plots = list(plot1, plot2))
+
+##Cells with a very small library size(<1500) and a very high (>0.5) mitochondrial genome transcript ratio wereremoved as High proportions are indicative of poor-quality cells ( Ilicic et al., 2016; Islam et al., 2014), possibly because of increased apoptosis and/or loss of cytoplasmic RNA from lysed cells. Genes detected (UMI count > 0) in less than three cells were removed
+pb <- subset(x = pbmc, subset = nFeature_RNA > 1500 & percent.mt <5)
+
+dim(pbmc)
+
+#-------------------------------NORMALIZING THE DATA---------------------------------------
+
+# Performing log-normalisation to normalize data
+pbmc <- NormalizeData(object = pbmc, normalization.method = "LogNormalize", 
+                      scale.factor = 10000)
+
+
+#-----------------------------STEP 2: fINDING VARIABLE GENES----------------------------------------
+```{r}
+
+# To Detect highly variable genes
+#To find the genes that vary between single cells; genes that are constant among all cells have no distinguishing power.
+#FindVariableGenes() function calculates the average expression and dispersion for each gene, places these genes into bins, and then calculates a z-score for dispersion within each bin.This helps control for the relationship between variability and average expression
+
+#Calculates highly variable genes
+pbmc <- FindVariableFeatures(object = pbmc, selection.method="dispersion", nfeatures=7000)
+# Top 7000 genes detected, by default it gives top 2000 genes
+
+# Identify the 10 most highly variable genes
+top10 <- head(x = VariableFeatures(object = pbmc), 10)
+
+# plot variable features with and without labels
+plot1 <- VariableFeaturePlot(object = pbmc)
+plot2 <- LabelPoints(plot = plot1, points = top10)
+
+
+
+#-------------------------------Dimensionality Reduction (PCA) and its plots----------------------------------
+#Run PCA based on the variable genes. The pca is stored in the slot
+#For PCA we need to scale the data
+pbmc <- ScaleData(pbmc)
+
+#Performing PCA
+ 
+pbmc <- RunPCA(object = pbmc, do.print = TRUE)
+
+
+#pbmc$RNA@var.features stores variable genes
+length(pbmc$RNA@var.features) # to check features
+
+
+#Visualizing PCA
+
+DimPlot(object = pbmc, dim.1 = 1, dim.2 = 2)
+PCAPlot(object = pbmc, dim.1 = 1, dim.2 = 2)
+```
+
+#view loadings of PC1 and 2
+
+```{r}
+
+#Visually represent the loadings
+VizDimLoadings(pbmc, dims = 1:2, reduction = "pca")
+
+#cells and features are ordered according to their PCA scores. Cells plotted are extreme cells.
+DimHeatmap(pbmc, dims = 1, cells = 500, balanced = TRUE)
+
+#heat map of first 5 PCS
+DimHeatmap(pbmc, dims = 1:5, cells = 1000, balanced = TRUE)
+```
+#---------------------Determining appropriate dimensions of the dataset------------------------------------
+```{r}
+#The JackStrawPlot function provides a visualization tool for comparing the distribution of p-values for each PC with a uniform distribution (dashed line). ‘Significant’ PCs will show a strong enrichment of genes with low p-values (solid curve above the dashed line)
+#Jackstraw implements a resampling test inspired by the JackStraw procedure. It randomly permutes a subset of the data (1% by default) and rerun PCA, constructing a ‘null distribution’ of feature scores, and repeat this procedure. Thus helps to identify ‘significant’ PCs as those who have a strong enrichment of low p-value features ( from Seurat tutorial ).
+#this method is computationally exhaustive took 6 minutes on my system
+pbmc <- JackStraw(pbmc, num.replicate = 10)
+pbmc <- ScoreJackStraw(pbmc, dims = 1:30)
+
+
+#second method: Elbow Plot
+#this takes less time. heuristic method: PC components are ranked based on the variance explained by each component.
+ElbowPlot(pbmc)
+#elbow plot gives 19-20 PCS as best 
+
+```
+
+
+#-------------------------------Clustering the cells------------------------------------------------------
+```{r}
+## as per liver paper
+#Find neighbors
+pbmc<- FindNeighbors(object = pbmc, dims=1:29)
+
+#Finding clusters
+pbmc <- FindClusters(
+  object = pbmc, 
+  reduction.type = "pca", 
+  dims.use = 1:29, 
+  resolution = 0.8, 
+  print.output = 1, 
+  save.SNN = TRUE
+)
+
+## Look at cluster IDs of the first 5 cells
+head(Idents(pbmc), 5)
+                    
+#performing T-sne
+pbmc <- RunTSNE(
+  object = pbmc,
+  dims= 1:29,
+  perplexity=27
+)
+
+#visualizing T-SNE
+DimPlot(object=pbmc, reduction = "tsne",label=TRUE,label.size = 4,pt.size=0.8)
+
+#Colouring Tsne by number of donors
+DimPlot(object=pbmc, reduction = "tsne",group.by= "orig.ident",pt.size=0.5)
+
+```
+
+# differentially expressed genes
+
+```{r }
+##-------------Differentially Expressed Genes (Marker Genes)--------------------------------------------------
+
+#find markers that define clusters via differential expression ( genes that are differentially expressed in distinct phenotypes) Here clusters can be considered as phenotypes
+#It also finds Positive and negative marker gene for each cluster
+#The min.pct argument requires a feature to be detected at a minimum percentage (how will this be decided?) in either of the two groups of cells, and the thresh.test argument requires a feature to be differentially expressed (on average) by some amount between the two groups(tutorial)
+
+#p-values should be interpreted cautiously, as the genes used for clustering are the same genes tested for differential expression(R documentation)
+
+#find marker genes in cluster 1
+cluster1.markers <- FindMarkers(pbmc, ident.1 = 1, min.pct = 0.25)
+head(cluster1.markers, n = 5)
+
+# find all markers distinguishing cluster 5 from clusters 0 and 3
+cluster5.markers <- FindMarkers(pbmc, ident.1 = 5, ident.2 = c(0, 3), min.pct = 0.25)
+head(cluster5.markers, n = 5)
+
+# find markers for every cluster compared to all remaining cells, report only the positive ones
+#bimod uses LRT
+
+pbmc.markers <- FindAllMarkers(pbmc, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25,test.use= "bimod" )
+res <- pbmc.markers %>% group_by(cluster) %>% top_n(n = 5, wt = avg_logFC)
+# 105 marker genes found
+
+x<-matrix(res$gene, ncol=5, byrow=T)
+mydata<-data.frame(cluster=0:20, genes=matrix(res$gene, ncol=5, byrow=T))
+write.csv(mydata,file="MyData.csv")
+#write.csv on this dataframe. CH
+```
+#Parameters for Marker gene function
+p_val : p_val (unadjusted)
+avg_logFC : log fold-chage of the average expression between the two groups. Positive values indicate that the feature is more highly expressed in the first group.
+pct.1 : The percentage of cells where the feature is detected in the first group
+pct.2 : The percentage of cells where the feature is detected in the second group
+p_val_adj : Adjusted p-value, based on bonferroni correction using all features in the dataset.
+
+
+Marker genes using ROC
+```{r}
+
+pbmc.markers <- FindAllMarkers(pbmc, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25,test.use= "roc" )
+pbmc.markers %>% group_by(cluster) %>% top_n(n = 3, wt = avg_logFC)
+
+```
+Visualize marker genes
+
+```{r}
+VlnPlot(pbmc, features = "VWF")
+
+#Vln Plot refers to Violin plot. This can be used to find in which clusters a gene is highly expressed
+VlnPlot(pbmc, features = "CDKN1C")
+#differentially expressed in cluster 6 and 19
+
+#cluster 6
+cluster6.markers <- FindMarkers(pbmc, ident.1 = 6, min.pct = 0.25)
+cluster6.markers["CDKN1C",]
+
+FeaturePlot(pbmc, features = c("ALB", "HAMP", "ARG1", "PCK1", "AFP","BCHE","CDKN1C"))
+
+#HEATMAP ( top 2 markers (or all markers if less than 2) for each cluster) 
+top2 <- pbmc.markers %>% group_by(cluster) %>% top_n(n = 2, wt = avg_logFC)
+DoHeatmap(subset(pbmc, downsample = 100), features = top2$gene) + NoLegend()
+
+```
+
+CEMi tools
+CEMi tool for gene module detection
+
+```{r}
+
+library("CEMiTool")
+head(liverM)
+
+liv<-data.frame(liverM)
+
+# to view the dataframe ( first 2000 genes and first 1000 cells)
+liv1<-liv[1:2000,1:1000]
+
+#cemitool function receives the expression data, performs the co-expression modules analysis and returns a CEMiTool object (from the tutorial)
+
+cems <- cemitool(liv1)
+
+#view summary
+cems
+#4 modules detected
+
+# inspect modules
+nmodules(cems)
+
+head(module_genes(cems))
+
+# genes modules
+#1 RPS27      M2
+#2 RPL11      M2
+#3  RPS8      M2
+#4 RPL22      M2
+#5  RPL5      M2
+#6 H3F3A      M1
+```
+
+#Individual Section
+
+```{r}
+#get_hubs function to identify the top n genes with the highest connectivity in each module: hubs <- get_hubs(cem,n). A summary statistic of the expression data within each module (either the module mean or eigengene) can be obtained using:  
+
+
+hubs <- get_hubs(cems,5)
+hubs
+
+summary <- mod_summary(cems)
+summary
+
+
+```
+
+Plots
+```{r}
+# plot gene expression within each module
+cems <- plot_profile(cems)
+plots <- show_plot(cems, "profile")
+plots[1]
+```
+
+
+GMT files Cluster Labelling by Catherine (I have not tried it yet)
+
+```{r}
+
+
+library(GSA)
+liverset <- GSA.read.gmt("~/rna seq liver/Gene-expression-Project/liver_cell_type_signature_gene_sets.gmt")
+
+liverset$genesets[[3]] 
+liverset$geneset.names[[3]]
+liverset$geneset.descriptions[[3]]
+
+
+# pbmc.markers from Bharvi's calculation
+
+res <- pbmc.markers %>% group_by(cluster) %>% top_n(n = 5, wt = avg_logFC)
+
+GSA.correlate(liverset, res$gene) 
+
+x <- unique(unlist(liverset$genesets))
+intersect(x,res$gene)
+
+
+x <- unlist(liverset$genesets[3])  # cytoxic
+filter(res, gene %in% x) %>% 
+  group_by(cluster)  %>% summarise( n())
+# so cluster 13 is likely the cytoxic (NK) cluster. This is a middle right cluster.
+
+```
+
